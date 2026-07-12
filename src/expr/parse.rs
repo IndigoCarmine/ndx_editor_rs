@@ -267,6 +267,8 @@ fn is_predicate(kw: Keyword) -> bool {
             | Keyword::Element
             | Keyword::Chain
             | Keyword::Type
+            | Keyword::Molecule
+            | Keyword::AtomId
     )
 }
 
@@ -289,6 +291,14 @@ fn build_pred(kw: Keyword, arg: &str, span: &Span) -> Result<Pred, ExprError> {
         Keyword::ResName => Pred::ResName(pats()),
         Keyword::Element => Pred::Element(pats()),
         Keyword::Type => Pred::Type(pats()),
+        Keyword::Molecule => Pred::Molecule(pats()),
+        Keyword::AtomId => {
+            let set = crate::atomset::parse_ranges(arg).map_err(|e| ExprError::BadArgument {
+                msg: format!("`atomid` takes atom numbers and ranges like `1-10,15`: {e}"),
+                span: span.clone(),
+            })?;
+            Pred::AtomId(set)
+        }
         Keyword::Chain => {
             let mut cs = Vec::new();
             for w in &words {
@@ -493,6 +503,20 @@ mod tests {
             parse_expr("resid -3--1").unwrap(),
             Expr::Pred { pred: Pred::ResId(ref r), .. } if r == &[(-3, -1)]
         ));
+    }
+
+    /// make_ndx's `a 1-10`, usable inside an expression. The only predicate that needs no
+    /// structure file, because it *is* the atom set.
+    #[test]
+    fn atomid_takes_literal_atom_numbers() {
+        match parse_expr("atomid 1-3,7").unwrap() {
+            Expr::Pred { pred: Pred::AtomId(set), .. } => {
+                assert_eq!(set.as_slice(), [1, 2, 3, 7]);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(parse_expr("atomid 0").is_err(), ".ndx indices are 1-based");
+        assert!(parse_expr("atomid abc").is_err());
     }
 
     #[test]

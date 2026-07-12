@@ -38,7 +38,15 @@ const KEYWORDS: &[&str] = &[
 
 pub fn parse_line(line: &str) -> Result<Option<Cmd>> {
     let line = line.trim();
-    if line.is_empty() || line.starts_with('#') {
+
+    // A bare Enter re-prints the table. It is the thing you want most often after an edit, and
+    // there is nothing else a blank line could usefully mean.
+    if line.is_empty() {
+        return Ok(Some(Cmd::List { long: false }));
+    }
+
+    // A comment, though, really is a no-op — scripts piped into `ndxed edit` use them.
+    if line.starts_with('#') {
         return Ok(None);
     }
 
@@ -133,16 +141,32 @@ pub fn parse_line(line: &str) -> Result<Option<Cmd>> {
 }
 
 fn parse_split(rest: &str) -> Result<Cmd> {
-    const USAGE: &str = "split <group> parts|size|at <N> [prefix] [--replace]";
+    const USAGE: &str =
+        "split <group> parts|size|at <N> [prefix] [--replace]  |  split <group> residue|molecule";
     let mut words: Vec<&str> = rest.split_ascii_whitespace().collect();
 
     let replace = words.contains(&"--replace");
     words.retain(|w| *w != "--replace");
 
-    if words.len() < 3 {
+    if words.len() < 2 {
         return Err(usage(USAGE));
     }
     let g: GroupRef = words[0].parse()?;
+
+    // `residue` and `molecule` take no count: the structure/topology decides the parts.
+    if let "residue" | "res" | "molecule" | "mol" = words[1] {
+        let how = if words[1].starts_with("res") {
+            How::Residue
+        } else {
+            How::Molecule
+        };
+        let prefix = words.get(2).map(|s| (*s).to_string());
+        return Ok(Cmd::Split(g, how, prefix, replace));
+    }
+
+    if words.len() < 3 {
+        return Err(usage(USAGE));
+    }
     let how = match words[1] {
         "parts" => How::Parts(words[2].parse().map_err(|_| usage(USAGE))?),
         "size" => How::Size(words[2].parse().map_err(|_| usage(USAGE))?),
@@ -186,6 +210,7 @@ fn usage(s: &str) -> NdxError {
 }
 
 pub const HELP: &str = "\
+  <Enter>                     list the groups (same as `l`)
   l | list [--long]           list the groups
   <expression>                add a group, e.g. `0 & !1`, `Protein | SOL`, `(1|2) \\ 3`
   expr <expression>           same, for a group whose name collides with a command
@@ -198,7 +223,9 @@ pub const HELP: &str = "\
   split <group> parts <K>     split into K near-equal parts
   split <group> size <K>      split into chunks of K atoms
   split <group> at 100,250    cut after those positions
-                              ... all three take [prefix] [--replace]
+  split <group> residue       one group per residue      (needs -s conf.gro)
+  split <group> molecule      one group per molecule     (needs -p topol.top)
+                              ... all take [prefix] [--replace]
   merge <file.ndx>            append another file's groups to this session
   diff <file.ndx>             compare this session against a file
   undo | redo                 step through the edit history
@@ -211,6 +238,12 @@ Operators, tightest first:  !  &  \\  |
 Groups: by id (`3`), name (`SOL`), duplicate (`SOL#2`), or wildcard (`Fiber*`, `O?`).
 A wildcard means every group whose name matches — in an expression, their union.
 Quote it to match a name literally: `\"O*\"`.
+
+With -s conf.gro / -p topol.top, expressions also take:
+  name CA        resname SOL     resid 1-50      element H
+  type OW        molecule SOL    bonded X        bonded 2 of X    within 0.5 of X
+  e.g.  element H & bonded Protein     the hydrogens attached to Protein
+
 The input file is never overwritten: `q` needs -o or a filename.";
 
 #[cfg(test)]
@@ -221,10 +254,17 @@ mod tests {
         parse_line(line).unwrap().unwrap()
     }
 
+    /// Pressing Enter on an empty line re-prints the group table.
     #[test]
-    fn blank_and_comment_lines_do_nothing() {
-        assert!(parse_line("").unwrap().is_none());
-        assert!(parse_line("   ").unwrap().is_none());
+    fn a_blank_line_lists_the_groups() {
+        assert_eq!(p(""), Cmd::List { long: false });
+        assert_eq!(p("   "), Cmd::List { long: false });
+    }
+
+    /// A comment is still a no-op, so a script piped into `ndxed edit` can annotate itself
+    /// without printing a table after every remark.
+    #[test]
+    fn comment_lines_do_nothing() {
         assert!(parse_line("# note").unwrap().is_none());
     }
 

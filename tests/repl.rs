@@ -251,6 +251,28 @@ fn diff_against_a_file() {
     assert!(out.contains("+ Ligand"));
 }
 
+/// Enter on an empty line re-prints the table — the thing you want most often after an edit.
+#[test]
+fn a_bare_enter_lists_the_groups() {
+    let (out, code) = script("small.ndx", "0 & !1\n\nq!\n");
+    assert_eq!(code, 0);
+
+    // The table is printed twice: once in the opening banner, once for the blank line.
+    assert_eq!(out.matches("  0 System").count(), 2, "{out}");
+
+    // And the second one includes the group the expression had just added.
+    let after_blank = out.split("> \n").nth(1).expect("a blank-line prompt");
+    assert!(after_blank.contains("System_&_!Protein"), "{after_blank}");
+}
+
+/// A comment stays a no-op, so a piped script can annotate itself without printing a table after
+/// every remark.
+#[test]
+fn a_comment_line_prints_nothing() {
+    let (out, _) = script("small.ndx", "# just a note\nq!\n");
+    assert_eq!(out.matches("System ").count(), 1, "only the banner\n{out}");
+}
+
 #[test]
 fn help_lists_the_commands() {
     let (out, _) = script("small.ndx", "help\nq!\n");

@@ -132,7 +132,7 @@ pub fn exec(s: &mut Session, cmd: Cmd, w: &mut impl Write) -> Result<Flow> {
 
         Cmd::Split(g, how, prefix, replace) => {
             s.snapshot();
-            match ops::split::split(&mut s.ndx, &g, &how, prefix.as_deref(), replace) {
+            match ops::split::split(&mut s.ndx, &g, &how, prefix.as_deref(), replace, &s.system) {
                 Ok(r) => {
                     for (name, len) in r.names.iter().zip(&r.sizes) {
                         writeln!(w, "    {name} : {len} atoms").ok();

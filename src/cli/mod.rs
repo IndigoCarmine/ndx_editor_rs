@@ -8,6 +8,7 @@ use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use ndx_editor::model::GroupRef;
 use ndx_editor::ops::diff::Match;
 use ndx_editor::ops::merge::OnConflict;
+use ndx_editor::system::{BondMode, LoadOptions};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -67,6 +68,47 @@ pub struct UniverseOpts {
     /// Use this group as the universe for '!'.
     #[arg(long, value_name = "GROUP")]
     pub universe: Option<GroupRef>,
+}
+
+/// The structure and topology behind `name`, `element`, `bonded`, `within`, ...
+#[derive(Args, Debug, Clone, Default)]
+pub struct SystemOpts {
+    /// Coordinates: a .gro file. Enables name/resname/resid/element/within.
+    #[arg(short = 's', long, value_name = "FILE")]
+    pub structure: Option<PathBuf>,
+
+    /// Topology: a .top or .itp file. Enables real bonds, and type/molecule.
+    #[arg(short = 'p', long, value_name = "FILE")]
+    pub topology: Option<PathBuf>,
+
+    /// Define a preprocessor symbol, as in an .mdp's `define = -DPOSRES`
+    #[arg(short = 'D', value_name = "SYMBOL")]
+    pub defines: Vec<String>,
+
+    /// Search this directory for #include (repeatable; $GMXLIB is searched too)
+    #[arg(short = 'I', value_name = "DIR")]
+    pub include_dirs: Vec<PathBuf>,
+
+    /// Where bonds come from
+    #[arg(long, value_enum, default_value_t = BondMode::Auto)]
+    pub bonds: BondMode,
+
+    /// Apply the minimum-image convention in `within` (needs a box in the .gro)
+    #[arg(long)]
+    pub pbc: bool,
+}
+
+impl SystemOpts {
+    pub fn load_options(&self) -> LoadOptions {
+        LoadOptions {
+            structure: self.structure.clone(),
+            topology: self.topology.clone(),
+            defines: self.defines.clone(),
+            include_dirs: self.include_dirs.clone(),
+            bonds: self.bonds,
+            pbc: self.pbc,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
@@ -134,6 +176,8 @@ pub enum Cmd {
 
         #[command(flatten)]
         universe: UniverseOpts,
+        #[command(flatten)]
+        system: SystemOpts,
         #[command(flatten)]
         out: OutOpts,
     },
@@ -204,6 +248,10 @@ pub enum Cmd {
         #[arg(long, value_name = "POS", value_delimiter = ',', group = "how")]
         at: Option<Vec<usize>>,
 
+        /// Split into one group per residue (-s) or per molecule (-p)
+        #[arg(long, value_enum, group = "how")]
+        by: Option<SplitBy>,
+
         /// Name prefix for the parts (default: the source group's name)
         #[arg(long)]
         prefix: Option<String>,
@@ -212,6 +260,8 @@ pub enum Cmd {
         #[arg(long)]
         replace: bool,
 
+        #[command(flatten)]
+        system: SystemOpts,
         #[command(flatten)]
         out: OutOpts,
     },
@@ -290,8 +340,27 @@ pub enum Cmd {
 
         #[command(flatten)]
         universe: UniverseOpts,
+        #[command(flatten)]
+        system: SystemOpts,
+    },
+
+    /// Summarize a structure/topology and check it against an index file
+    Info {
+        /// The .ndx file to check against (optional)
+        file: Option<PathBuf>,
+        #[command(flatten)]
+        system: SystemOpts,
     },
 
     /// Print a shell completion script
     Completions { shell: clap_complete::Shell },
+}
+
+/// What `split --by` groups on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum SplitBy {
+    /// One group per residue id (needs -s conf.gro)
+    Residue,
+    /// One group per molecule instance (needs -p topol.top)
+    Molecule,
 }

@@ -65,8 +65,14 @@ pub enum Pred {
     ResId(Vec<(i32, i32)>),
     Element(Vec<Pattern>),
     Chain(Vec<char>),
-    /// Force-field atom type — the only predicate that needs a topology rather than a structure.
+    /// Force-field atom type. Needs a topology.
     Type(Vec<Pattern>),
+    /// `[ moleculetype ]` name. Needs a topology — and it is the closest thing GROMACS has to a
+    /// chain, since a `.gro` carries no chain column.
+    Molecule(Vec<Pattern>),
+    /// Literal atom numbers: `atomid 116`, `atomid 1-10,15`. The one predicate that needs nothing
+    /// loaded — it is make_ndx's `a 1-10`, usable inside an expression.
+    AtomId(crate::atomset::AtomSet),
 }
 
 impl Pred {
@@ -78,14 +84,18 @@ impl Pred {
             Pred::Element(_) => "element",
             Pred::Chain(_) => "chain",
             Pred::Type(_) => "type",
+            Pred::Molecule(_) => "molecule",
+            Pred::AtomId(_) => "atomid",
         }
     }
 
     fn arg_str(&self) -> String {
         match self {
-            Pred::Name(p) | Pred::ResName(p) | Pred::Element(p) | Pred::Type(p) => {
-                p.iter().map(Pattern::as_str).collect::<Vec<_>>().join("_")
-            }
+            Pred::Name(p)
+            | Pred::ResName(p)
+            | Pred::Element(p)
+            | Pred::Type(p)
+            | Pred::Molecule(p) => p.iter().map(Pattern::as_str).collect::<Vec<_>>().join("_"),
             Pred::ResId(rs) => rs
                 .iter()
                 .map(|(lo, hi)| {
@@ -98,6 +108,7 @@ impl Pred {
                 .collect::<Vec<_>>()
                 .join(","),
             Pred::Chain(cs) => cs.iter().collect(),
+            Pred::AtomId(set) => crate::atomset::format_ranges(set),
         }
     }
 }

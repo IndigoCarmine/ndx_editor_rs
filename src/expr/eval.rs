@@ -4,8 +4,8 @@ use std::rc::Rc;
 
 use crate::atomset::AtomSet;
 use crate::error::{NdxError, Result};
-use crate::expr::{Expr, Pred};
-use crate::model::IndexFile;
+use crate::expr::{Expr, Pattern, Pred};
+use crate::model::{AtomId, IndexFile};
 use crate::system::SystemCtx;
 use crate::universe::{self, Universe, UniverseSpec};
 
@@ -106,47 +106,152 @@ impl<'a> EvalCtx<'a> {
                 Rc::new(a.difference(&b))
             }
 
-            // Everything below needs data an .ndx file does not carry. The readers are not
-            // written yet (see `system.rs`), so report exactly what is missing rather than
-            // pretending the syntax is wrong.
-            Expr::Pred { pred, span } => {
-                let (needs, hint) = match pred {
-                    Pred::Type(_) => (
-                        "a topology (.top)",
-                        "-p topol.top is not supported yet; it is the next milestone",
-                    ),
-                    _ => (
-                        "a structure file (.gro)",
-                        "-s conf.gro is not supported yet; it is the next milestone",
-                    ),
-                };
-                return Err(NdxError::NeedsSystem {
-                    feature: pred.keyword().to_string(),
-                    needs,
-                    hint,
-                    span: span.clone(),
-                });
+            // Everything below needs data an .ndx file does not carry. When the system was not
+            // loaded, say exactly which flag would have supplied it.
+            Expr::Pred { pred, span } => Rc::new(self.eval_pred(pred, span)?),
+
+            Expr::Bonded { of, depth, span } => {
+                let seed = self.eval(of)?;
+                let graph = self.bonds().ok_or_else(|| missing(
+                    "bonded",
+                    "bond information",
+                    "pass -p topol.top for real bonds, or -s conf.gro to estimate them \
+                     from interatomic distances",
+                    span,
+                ))?;
+                Rc::new(graph.expand(&seed, *depth))
             }
 
-            Expr::Bonded { span, .. } => {
-                return Err(NdxError::NeedsSystem {
-                    feature: "bonded".to_string(),
-                    needs: "bond information",
-                    hint: "-p topol.top (real bonds) or -s conf.gro (distance estimate) \
-                           is not supported yet; it is the next milestone",
-                    span: span.clone(),
-                });
-            }
-
-            Expr::Within { span, .. } => {
-                return Err(NdxError::NeedsSystem {
-                    feature: "within".to_string(),
-                    needs: "atom coordinates",
-                    hint: "-s conf.gro is not supported yet; it is the next milestone",
-                    span: span.clone(),
-                });
+            Expr::Within { radius, of, span } => {
+                let seed = self.eval(of)?;
+                let s = self.structure().ok_or_else(|| {
+                    missing("within", "atom coordinates", "pass -s conf.gro", span)
+                })?;
+                Rc::new(crate::spatial::within(s, &seed, *radius, self.system.pbc))
             }
         })
+    }
+
+    fn structure(&self) -> Option<&crate::structure::Structure> {
+        self.system.structure.as_ref()
+    }
+
+    fn topology(&self) -> Option<&crate::topology::Topology> {
+        self.system.topology.as_ref()
+    }
+
+    fn bonds(&self) -> Option<&crate::bonds::BondGraph> {
+        self.system.bonds.as_ref()
+    }
+
+    /// Sweep a per-atom predicate over the whole system.
+    fn eval_pred(&self, pred: &Pred, span: &crate::expr::Span) -> Result<AtomSet> {
+        let want_structure = || {
+            self.structure().ok_or_else(|| {
+                missing(
+                    pred.keyword(),
+                    "a structure file",
+                    "pass -s conf.gro",
+                    span,
+                )
+            })
+        };
+        let want_topology = || {
+            self.topology().ok_or_else(|| {
+                missing(pred.keyword(), "a topology", "pass -p topol.top", span)
+            })
+        };
+
+        // The one predicate that needs nothing loaded: it *is* the atom set.
+        if let Pred::AtomId(set) = pred {
+            return Ok(set.clone());
+        }
+
+        let hits: Vec<AtomId> = match pred {
+            Pred::AtomId(_) => unreachable!("handled above"),
+
+            Pred::Name(pats) => {
+                let s = want_structure()?;
+                sweep(s.natoms(), |a| {
+                    s.name(a).is_some_and(|n| any_match(pats, n))
+                })
+            }
+
+            Pred::ResName(pats) => {
+                let s = want_structure()?;
+                sweep(s.natoms(), |a| {
+                    s.resname(a).is_some_and(|n| any_match(pats, n))
+                })
+            }
+
+            Pred::Element(pats) => {
+                let s = want_structure()?;
+                // Element symbols are stored uppercase, so `element h` works too.
+                let upper: Vec<Pattern> =
+                    pats.iter().map(|p| Pattern::new(p.as_str().to_ascii_uppercase())).collect();
+                sweep(s.natoms(), |a| {
+                    s.element(a).is_some_and(|e| any_match(&upper, e))
+                })
+            }
+
+            Pred::ResId(ranges) => {
+                let s = want_structure()?;
+                sweep(s.natoms(), |a| {
+                    s.resid(a)
+                        .is_some_and(|r| ranges.iter().any(|(lo, hi)| r >= *lo && r <= *hi))
+                })
+            }
+
+            Pred::Type(pats) => {
+                let t = want_topology()?;
+                sweep(t.natoms, |a| {
+                    t.atomtype(a).is_some_and(|ty| any_match(pats, ty))
+                })
+            }
+
+            Pred::Molecule(pats) => {
+                let t = want_topology()?;
+                sweep(t.natoms, |a| {
+                    t.molname(a).is_some_and(|m| any_match(pats, m))
+                })
+            }
+
+            // A .gro has no chain column, and a .top has no chains at all — GROMACS splits systems
+            // into molecules, not chains. Point at the thing that actually exists.
+            Pred::Chain(_) => {
+                return Err(NdxError::Other(
+                    "`chain` is not available: a .gro file has no chain column\n\
+                     hint: GROMACS splits a system into molecules, so `molecule <name>` (with \
+                     -p topol.top) is usually what you want"
+                        .into(),
+                ));
+            }
+        };
+
+        Ok(AtomSet::from_sorted_unique(hits))
+    }
+}
+
+/// Every 1-based atom id satisfying `f`, in order — so the result is sorted by construction.
+fn sweep(natoms: u32, mut f: impl FnMut(AtomId) -> bool) -> Vec<AtomId> {
+    (1..=natoms).filter(|a| f(*a)).collect()
+}
+
+fn any_match(pats: &[Pattern], s: &str) -> bool {
+    pats.iter().any(|p| p.matches(s))
+}
+
+fn missing(
+    feature: &str,
+    needs: &'static str,
+    hint: &'static str,
+    span: &crate::expr::Span,
+) -> NdxError {
+    NdxError::NeedsSystem {
+        feature: feature.to_string(),
+        needs,
+        hint,
+        span: span.clone(),
     }
 }
 
@@ -335,6 +440,15 @@ mod tests {
         assert!(matches!(eval("Nope*"), Err(NdxError::NoGroupMatches { .. })));
     }
 
+    /// `atomid` works with nothing loaded — unlike every other predicate.
+    #[test]
+    fn atomid_needs_no_structure() {
+        assert_eq!(eval("atomid 1-3").unwrap(), [1, 2, 3]);
+        // And composes with the groups.
+        assert_eq!(eval("atomid 1-5 & 1").unwrap(), [1, 2, 3]);
+        assert_eq!(eval("1 & !atomid 1").unwrap(), [2, 3]);
+    }
+
     #[test]
     fn unknown_group_is_reported() {
         assert!(matches!(
@@ -343,12 +457,22 @@ mod tests {
         ));
     }
 
+    /// Without -s / -p these still parse; the failure names the flag that would have worked.
     #[test]
     fn structure_predicates_say_what_is_missing() {
         match eval("element H") {
-            Err(NdxError::NeedsSystem { feature, needs, .. }) => {
+            Err(NdxError::NeedsSystem { feature, needs, hint, .. }) => {
                 assert_eq!(feature, "element");
-                assert!(needs.contains(".gro"));
+                assert_eq!(needs, "a structure file");
+                assert!(hint.contains("-s conf.gro"));
+            }
+            other => panic!("expected NeedsSystem, got {other:?}"),
+        }
+        match eval("type OW") {
+            Err(NdxError::NeedsSystem { feature, needs, hint, .. }) => {
+                assert_eq!(feature, "type");
+                assert_eq!(needs, "a topology");
+                assert!(hint.contains("-p topol.top"));
             }
             other => panic!("expected NeedsSystem, got {other:?}"),
         }
@@ -357,16 +481,18 @@ mod tests {
     #[test]
     fn bonded_says_it_needs_bonds() {
         match eval("element H & bonded 1") {
-            Err(NdxError::NeedsSystem { feature, needs, span, .. }) => {
+            Err(NdxError::NeedsSystem { feature, span, .. }) => {
+                // The left operand is evaluated first, so it is the one that reports.
                 assert_eq!(feature, "element");
-                assert!(needs.contains(".gro"));
-                // The caret should sit under `element H`, the left operand we evaluated first.
-                assert_eq!(span, 0..9);
+                assert_eq!(span, 0..9, "the caret should sit under `element H`");
             }
             other => panic!("expected NeedsSystem, got {other:?}"),
         }
         match eval("bonded 1") {
-            Err(NdxError::NeedsSystem { feature, .. }) => assert_eq!(feature, "bonded"),
+            Err(NdxError::NeedsSystem { feature, needs, .. }) => {
+                assert_eq!(feature, "bonded");
+                assert_eq!(needs, "bond information");
+            }
             other => panic!("expected NeedsSystem, got {other:?}"),
         }
     }
@@ -376,7 +502,7 @@ mod tests {
         match eval("within 0.5 of 1") {
             Err(NdxError::NeedsSystem { feature, needs, .. }) => {
                 assert_eq!(feature, "within");
-                assert!(needs.contains("coordinates"));
+                assert_eq!(needs, "atom coordinates");
             }
             other => panic!("expected NeedsSystem, got {other:?}"),
         }

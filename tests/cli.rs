@@ -264,20 +264,20 @@ fn a_syntax_error_points_a_caret_at_the_problem() {
         .stderr(predicate::str::contains("^"));
 }
 
-// --------------------------------------- structure-dependent features (M10/M11)
+// ------------------------------------- structure-dependent features, with no system loaded
 
-/// `.gro` / `.top` are not implemented yet. The grammar accepts them today, so the failure must
-/// be "you need a structure file", not "syntax error" — that is the whole point of fixing the
-/// grammar now.
+/// These need a `.gro` / `.top`. Without one the failure must name the flag that would have
+/// supplied it, rather than reading as a syntax error. (See tests/system.rs for them working.)
 #[test]
-fn structure_expressions_parse_and_report_what_is_missing() {
+fn structure_expressions_report_the_flag_they_need() {
     let f = fixture("small.ndx");
 
     ndxed()
         .args(["select", f.to_str().unwrap(), "element H & bonded Protein"])
         .assert()
         .code(3)
-        .stderr(predicate::str::contains("`element` needs a structure file (.gro)"))
+        .stderr(predicate::str::contains("`element` needs a structure file"))
+        .stderr(predicate::str::contains("-s conf.gro"))
         .stderr(predicate::str::contains("^"));
 
     ndxed()
@@ -297,7 +297,7 @@ fn structure_expressions_parse_and_report_what_is_missing() {
         .args(["select", f.to_str().unwrap(), "type OW"])
         .assert()
         .code(3)
-        .stderr(predicate::str::contains("`type` needs a topology (.top)"));
+        .stderr(predicate::str::contains("`type` needs a topology"));
 }
 
 // -------------------------------------------------- wildcards in group names

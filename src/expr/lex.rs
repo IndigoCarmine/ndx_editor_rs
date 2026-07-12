@@ -9,6 +9,8 @@ pub enum Keyword {
     Element,
     Chain,
     Type,
+    Molecule,
+    AtomId,
     Bonded,
     Within,
     Of,
@@ -23,6 +25,8 @@ impl Keyword {
             Keyword::Element => "element",
             Keyword::Chain => "chain",
             Keyword::Type => "type",
+            Keyword::Molecule => "molecule",
+            Keyword::AtomId => "atomid",
             Keyword::Bonded => "bonded",
             Keyword::Within => "within",
             Keyword::Of => "of",
@@ -32,6 +36,8 @@ impl Keyword {
 
 /// Longest first, so `resname` is not mistaken for `resid`'s prefix (and so on).
 const KEYWORDS: &[(&str, Keyword)] = &[
+    ("molecule", Keyword::Molecule),
+    ("atomid", Keyword::AtomId),
     ("resname", Keyword::ResName),
     ("element", Keyword::Element),
     ("within", Keyword::Within),

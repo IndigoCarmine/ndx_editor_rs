@@ -55,6 +55,16 @@ pub enum NdxError {
     NoGroupMatches { pattern: String },
 
     #[error(
+        "[ molecules ] references the molecule type {name:?}, which is not defined anywhere \
+         in the topology\n\
+         known types: {}\n\
+         hint: its definition is probably in an #include we could not find — pass -I DIR, or set \
+         $GMXLIB to your GROMACS force-field directory",
+        if .known.is_empty() { "(none)".to_string() } else { .known.join(", ") }
+    )]
+    UnknownMoleculeType { name: String, known: Vec<String> },
+
+    #[error(
         "{pattern:?} matches {} groups ({}), but this takes exactly one\n\
          hint: name one of them, or use its id",
         .names.len(),

@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 use ndx_editor::error::{NdxError, Result, exit, render_caret};
 use ndx_editor::parse::{ParseOptions, parse_path_with};
+use ndx_editor::system::{self, LoadOptions, SystemCtx};
 use ndx_editor::universe::UniverseSpec;
 
 use crate::cli::render;
@@ -21,6 +22,7 @@ pub struct Options {
     pub dry_run: bool,
     pub no_readline: bool,
     pub universe: UniverseSpec,
+    pub load: LoadOptions,
     pub quiet: bool,
 }
 
@@ -49,6 +51,23 @@ pub fn run(opts: Options) -> Result<i32> {
     }
     let _ = out.flush();
 
+    // Load the structure/topology once, up front: a 40k-atom .top is not something to re-read on
+    // every command, and a failure should be seen before any editing happens.
+    let cx = SystemCtx::load(&opts.load)?;
+    for w in &cx.warnings {
+        writeln!(out, "warning: {w}").ok();
+    }
+    for w in cx.check_against(&ndx) {
+        writeln!(out, "warning: {w}").ok();
+    }
+    for line in system::describe(&cx) {
+        writeln!(out, "{line}").ok();
+    }
+    if !cx.is_empty() {
+        writeln!(out).ok();
+    }
+    let _ = out.flush();
+
     let mut session = Session::open(
         opts.file.clone(),
         ndx,
@@ -57,6 +76,7 @@ pub fn run(opts: Options) -> Result<i32> {
         opts.dry_run,
         opts.force_overwrite,
     );
+    session.system = cx;
 
     let interactive = std::io::stdin().is_terminal() && !opts.no_readline;
     if interactive {

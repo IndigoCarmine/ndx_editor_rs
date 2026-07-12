@@ -10,11 +10,11 @@ use ndx_editor::ops::merge::merge;
 use ndx_editor::ops::split::How;
 use ndx_editor::ops::{self, End};
 use ndx_editor::parse::{ParseOptions, ParseReport, parse_path_with};
-use ndx_editor::system::SystemCtx;
+use ndx_editor::system::{self, SystemCtx};
 use ndx_editor::universe::UniverseSpec;
 use ndx_editor::write::{Sink, WriteOptions};
 
-use crate::cli::{Cli, Cmd, OutOpts, UniverseOpts};
+use crate::cli::{Cli, Cmd, OutOpts, SplitBy, SystemOpts, UniverseOpts};
 use crate::cli::render;
 use crate::repl;
 
@@ -85,6 +85,17 @@ impl UniverseOpts {
     }
 }
 
+fn load_system(ui: &Ui, opts: &SystemOpts, ndx: &IndexFile) -> Result<SystemCtx> {
+    let cx = SystemCtx::load(&opts.load_options())?;
+    for w in &cx.warnings {
+        ui.warn(w);
+    }
+    for w in cx.check_against(ndx) {
+        ui.warn(&w);
+    }
+    Ok(cx)
+}
+
 fn read(ui: &Ui, path: &Path) -> Result<IndexFile> {
     let (ndx, report) = parse_path_with(path, &ParseOptions::default())?;
     ui.report(&report, &path.display().to_string());
@@ -108,6 +119,7 @@ pub fn run(cli: Cli) -> i32 {
                 natoms: None,
                 universe: None,
             },
+            system: SystemOpts::default(),
         },
         (None, None) => {
             let _ = Cli::command().print_help();
@@ -187,16 +199,18 @@ fn dispatch(ui: &Ui, cmd: Cmd) -> Result<i32> {
             keep_only,
             error_on_empty,
             universe,
+            system,
             out,
         } => {
             let mut ndx = read(ui, &file)?;
+            let cx = load_system(ui, &system, &ndx)?;
             set_expr_source(Some(expr.clone()));
             let sel = ops::select::select(
                 &mut ndx,
                 &expr,
                 name.as_deref(),
                 &universe.spec(),
-                &SystemCtx::default(),
+                &cx,
                 error_on_empty,
             )?;
             set_expr_source(None);
@@ -264,22 +278,27 @@ fn dispatch(ui: &Ui, cmd: Cmd) -> Result<i32> {
             parts,
             size,
             at,
+            by,
             prefix,
             replace,
+            system,
             out,
         } => {
-            let how = match (parts, size, at) {
-                (Some(k), None, None) => How::Parts(k),
-                (None, Some(k), None) => How::Size(k),
-                (None, None, Some(cuts)) => How::At(cuts),
+            let how = match (parts, size, at, by) {
+                (Some(k), None, None, None) => How::Parts(k),
+                (None, Some(k), None, None) => How::Size(k),
+                (None, None, Some(cuts), None) => How::At(cuts),
+                (None, None, None, Some(SplitBy::Residue)) => How::Residue,
+                (None, None, None, Some(SplitBy::Molecule)) => How::Molecule,
                 _ => {
                     return Err(NdxError::Other(
-                        "split needs exactly one of --parts, --size or --at".into(),
+                        "split needs exactly one of --parts, --size, --at or --by".into(),
                     ));
                 }
             };
             let mut ndx = read(ui, &file)?;
-            let r = ops::split::split(&mut ndx, &group, &how, prefix.as_deref(), replace)?;
+            let cx = load_system(ui, &system, &ndx)?;
+            let r = ops::split::split(&mut ndx, &group, &how, prefix.as_deref(), replace, &cx)?;
             for (name, len) in r.names.iter().zip(&r.sizes) {
                 ui.note(&format!("{name} : {len} atoms"));
             }
@@ -360,6 +379,7 @@ fn dispatch(ui: &Ui, cmd: Cmd) -> Result<i32> {
             dry_run,
             no_readline,
             universe,
+            system,
         } => repl::run(repl::Options {
             file,
             out,
@@ -367,8 +387,38 @@ fn dispatch(ui: &Ui, cmd: Cmd) -> Result<i32> {
             dry_run,
             no_readline,
             universe: universe.spec(),
+            load: system.load_options(),
             quiet: ui.quiet,
         }),
+
+        Cmd::Info { file, system } => {
+            let ndx = match &file {
+                Some(f) => read(ui, f)?,
+                None => IndexFile::new(),
+            };
+            let cx = load_system(ui, &system, &ndx)?;
+            let mut out = anstream::stdout();
+            if cx.is_empty() {
+                return Err(NdxError::Other(
+                    "nothing to describe\nhint: pass -s conf.gro and/or -p topol.top".into(),
+                ));
+            }
+            for line in system::describe(&cx) {
+                writeln!(out, "{line}").map_err(|e| NdxError::io("<stdout>", e))?;
+            }
+            if let Some(f) = &file {
+                writeln!(
+                    out,
+                    "index:     {} group(s), highest atom {} ({})",
+                    ndx.len(),
+                    ndx.max_atom().unwrap_or(0),
+                    f.display()
+                )
+                .map_err(|e| NdxError::io("<stdout>", e))?;
+            }
+            let _ = out.flush();
+            Ok(exit::OK)
+        }
 
         Cmd::Completions { shell } => {
             // Generate into a buffer rather than straight to stdout: clap_complete *panics* on a

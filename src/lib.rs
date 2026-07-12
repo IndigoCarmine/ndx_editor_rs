@@ -10,13 +10,17 @@
 //! `make_ndx` makes.
 
 pub mod atomset;
+pub mod bonds;
 pub mod error;
 pub mod expr;
 pub mod glob;
 pub mod model;
 pub mod ops;
 pub mod parse;
+pub mod spatial;
+pub mod structure;
 pub mod system;
+pub mod topology;
 pub mod universe;
 pub mod write;
 

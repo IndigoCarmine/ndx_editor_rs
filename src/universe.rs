@@ -41,12 +41,18 @@ pub struct Universe {
 pub fn resolve(ndx: &IndexFile, spec: &UniverseSpec, system: &SystemCtx) -> Result<Universe> {
     let union_all = ndx.union_all();
 
-    if let Some(structure) = system.structure.as_ref() {
-        let natoms = structure.natoms();
+    // A loaded structure or topology settles it exactly, so `!` needs no guessing at all.
+    if let Some(natoms) = system.natoms() {
+        let warning = union_all.max().filter(|m| *m > natoms).map(|m| {
+            format!(
+                "the index file references atom {m}, but the loaded system has only {natoms} \
+                 atoms; '!' will not see the extra atoms"
+            )
+        });
         return Ok(Universe {
             set: AtomSet::range_inclusive(1, natoms),
             origin: UniverseOrigin::Structure(natoms),
-            warning: None,
+            warning,
         });
     }
 
