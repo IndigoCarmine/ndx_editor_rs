@@ -1,0 +1,35 @@
+[package]
+name = "ndx_editor_rs"
+version = "0.1.0"
+edition = "2024"
+# Edition 2024 needs 1.85; let-chains (`if let ... && let ...`) need 1.88.
+rust-version = "1.88"
+description = "GROMACS .ndx index file editor with a make_ndx-style interactive mode"
+
+[lib]
+name = "ndx_editor"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ndxed"
+path = "src/main.rs"
+
+[features]
+default = ["repl"]
+repl = ["dep:rustyline"]
+
+[dependencies]
+anstream = "0.6"
+anstyle = "1"
+anyhow = "1"
+clap = { version = "4.6", features = ["derive", "wrap_help"] }
+clap_complete = "4"
+rustyline = { version = "18", optional = true }
+tempfile = "3"
+thiserror = "2"
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+proptest = "1"
+tempfile = "3"

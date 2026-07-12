@@ -1,0 +1,8 @@
+; made by hand
+[ System ]  ; the whole thing
+  1	2   3
+; a comment line
+   4 5
+[ Empty ]
+[Unpadded]
+   1 2
